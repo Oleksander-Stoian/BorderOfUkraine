@@ -24,7 +24,10 @@ Ukraine Geospatial Visualization
 	PostgreSQL з розширенням PostGIS
 	Flask, SQLAlchemy, GeoPandas
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 734b882af2e6eb168afc02c58fc8c53d8ef3f960
 Завдання:
 1. Знайти координати кордону України та занести їх у базу даних Oracle/PostgreSQL/MySQL.
 
