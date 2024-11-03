@@ -1,7 +1,27 @@
+
+import pandas as pd
+
 import geopandas as gpd
-from shapely.geometry import Point, Polygon
 import numpy as np
 import multiprocessing as mp
+
+from shapely.geometry import Point, Polygon, shape, box
+from geopy.distance import distance
+
+
+def _find_intersections_for_sector(sector_id, sector, grid):
+    """Допоміжна функція для паралельного знаходження перетинів для одного сектора."""
+    sector_intersections = []
+    for point_id, row in grid.iterrows():
+        point = row.geometry
+        if sector.contains(point):
+            sector_intersections.append({
+                'sector_id': sector_id,
+                'point_id': point_id,
+                'point_coordinates': point
+            })
+        print(point_id)
+    return sector_intersections
 class GeoDataManager:
     """
         Клас GeoDataManager відповідає за роботу з геопросторовими даними, такими як кордон України,
@@ -28,45 +48,89 @@ class GeoDataManager:
 
     def generate_grid(self, bounds, step_km):
         """Генерує сітку квадратів заданого розміру (step_km у км)."""
-        minx, miny, maxx, maxy = bounds
-        step_deg = step_km / 111  # Перетворюємо кілометри в градуси (приблизно)
+        # Перетворюємо систему координат кордону України в метричну систему
+        border_m = bounds.to_crs(epsg=3857)
 
+        # Отримуємо межі в метрах
+        minx, miny, maxx, maxy = border_m.total_bounds
+
+        # Крок у метрах (10 км = 10000 м)
+        step_m = step_km * 1000
+
+        # Генерація сітки
         polygons = []
-        for x in np.arange(minx, maxx, step_deg):
-            for y in np.arange(miny, maxy, step_deg):
+        x_coords = np.arange(minx, maxx, step_m)
+        y_coords = np.arange(miny, maxy, step_m)
+
+        for x in x_coords:
+            for y in y_coords:
                 polygon = Polygon([
                     (x, y),
-                    (x + step_deg, y),
-                    (x + step_deg, y + step_deg),
-                    (x, y + step_deg)
+                    (x + step_m, y),
+                    (x + step_m, y + step_m),
+                    (x, y + step_m)
                 ])
                 polygons.append(polygon)
 
-        # Створюємо GeoDataFrame з усіма квадратами
-        grid = gpd.GeoDataFrame(geometry=polygons, crs="EPSG:4326")
+        # Створюємо GeoDataFrame з усіма квадратами в метричній системі координат
+        grid = gpd.GeoDataFrame(geometry=polygons, crs="EPSG:3857")
+
+        # Перетворюємо сітку назад у систему координат EPSG:4326 для подальшого використання
+        grid = grid.to_crs(epsg=4326)
         return grid
 
-    def filter_grid_by_border(self, grid, border):
-        """ Фільтрує сітку квадратів, залишаючи тільки ті, що перетинають кордон України."""
-        # Перетин сітки з кордоном
+    def filter_grid_by_border_squares(self, grid, border):
+        """Повертає сітку квадратів, які перетинаються з кордоном України."""
         try:
-            clipped_grid = gpd.overlay(grid, border, how='intersection', keep_geom_type=False)
+            # Об'єднуємо всі частини кордону України в одну геометрію
+            border_union = border.unary_union
+
+            # Залишаємо тільки ті квадрати, що перетинають або знаходяться всередині кордону
+            clipped_grid = grid[grid.intersects(border_union)]
 
         except Exception as e:
-            print(f"Помилка при фільтрації сітки: {e}")
+            print(f"Помилка при фільтрації квадратів: {e}")
             clipped_grid = gpd.GeoDataFrame(geometry=[], crs=grid.crs)  # Порожній GeoDataFrame у разі помилки
 
         return clipped_grid
 
-    def generate_sector(self, point, azimuth, radius_km=5):
+    def filter_grid_by_border(self, grid, border):
+        """Повертає тільки точки вершин квадратів, які знаходяться на території України."""
+        try:
+            # Об'єднуємо всі частини кордону України в одну геометрію
+            border_union = border.unary_union
+
+            # Список для зберігання вершин, що знаходяться всередині кордону
+            valid_points = []
+
+            # Перевірка кожного квадрата в сітці
+            for _, row in grid.iterrows():
+                geometry = row.geometry
+                if geometry.geom_type == 'Polygon':
+                    for coord in geometry.exterior.coords:
+                        point = Point(coord)
+                        # Додаємо точку, якщо вона знаходиться всередині кордону
+                        if border_union.contains(point):
+                            valid_points.append(point)
+
+            # Створюємо GeoDataFrame з унікальними точками
+            unique_points = gpd.GeoDataFrame(geometry=list(set(valid_points)), crs=grid.crs)
+
+        except Exception as e:
+            print(f"Помилка при фільтрації вершин: {e}")
+            unique_points = gpd.GeoDataFrame(geometry=[], crs=grid.crs)  # Порожній GeoDataFrame у разі помилки
+
+        return unique_points
+
+    def generate_sector(self, point, azimuth, radius_km=10):
         """Генерує сектор для заданої точки та азимуту."""
         angle_step = 1  # Крок для малювання сектору
         angles = np.arange(azimuth - 30, azimuth + 30 + angle_step, angle_step)
 
         points = [
             (
-                point.x + radius_km * np.cos(np.deg2rad(angle)) / 111,
-                point.y + radius_km * np.sin(np.deg2rad(angle)) / 111
+                distance(kilometers=radius_km).destination((point.y, point.x), angle).longitude,
+                distance(kilometers=radius_km).destination((point.y, point.x), angle).latitude
             )
             for angle in angles
         ]
@@ -74,61 +138,46 @@ class GeoDataManager:
 
         return Polygon(points)
 
-    # Метод не використовується, оскільки замість нього використовується generate_sectors_parallel() для покращення продуктивності.
-    # Можна використовувати для порівняння продуктивності.
-    def generate_sectors_for_grid(self, grid):
-        """Генерує сектори для всіх вершин сітки."""
-        sectors = []
-        for _, row in grid.iterrows():
-            geometry = row.geometry
-
-            # Перевірка на тип геометрії
-            if geometry.geom_type == 'Polygon':
-                polygons = [geometry]
-            elif geometry.geom_type == 'MultiPolygon':
-                polygons = list(geometry.geoms)  # Отримуємо окремі полігони
-            else:
-                continue  # Пропускаємо, якщо це не Polygon або MultiPolygon
-
-            # Проходимо по кожному полігону та його вершинах
-            for polygon in polygons:
-                for point in polygon.exterior.coords:
-                    for azimuth in [0, 120, 240]:
-                        sector = self.generate_sector(Point(point), azimuth)
-                        sectors.append(sector)
-
-        return gpd.GeoDataFrame(geometry=sectors, crs="EPSG:4326")
-
-    # Розпаралелиння
-    def generate_sector_for_point(args):
-        """Функція для генерації сектору для однієї точки."""
-        point, azimuth = args
-        return GeoDataManager().generate_sector(Point(point), azimuth)
-
-    def generate_sectors_parallel(self, grid):
-        """Паралельна генерація секторів для всіх вершин сітки."""
-        pool = mp.Pool(mp.cpu_count())  # пул процесів
+    def generate_sectors_parallel(self, clipped_grid, border_union):
+        """Паралельна генерація секторів для всіх вершин сітки на території України."""
+        pool = mp.Pool(mp.cpu_count())  # Пул процесів
         tasks = []
 
         # Створюємо завдання для кожної вершини та азимуту
-        for _, row in grid.iterrows():
+        for _, row in clipped_grid.iterrows():
             geometry = row.geometry
-            polygons = (
-                [geometry] if geometry.geom_type == 'Polygon' else list(geometry.geoms)
-            )
-            for polygon in polygons:
-                for point in polygon.exterior.coords:
-                    for azimuth in [0, 120, 240]:
-                        tasks.append((point, azimuth))
+
+            if geometry.geom_type == 'Point':  # Перевірка, що геометрія є точкою
+                for azimuth in [0, 120, 240]:
+                    tasks.append((geometry, azimuth))
 
         # Виконуємо завдання паралельно
         results = pool.map(self._generate_sector_for_task, tasks)
         pool.close()
         pool.join()
 
-        return gpd.GeoDataFrame(geometry=results, crs="EPSG:4326")
+        # Фільтруємо сектори, щоб залишити тільки ті, що повністю знаходяться в межах кордону України
+        valid_sectors = [sector for sector in results if border_union.contains(sector)]
+
+        return gpd.GeoDataFrame(geometry=valid_sectors, crs="EPSG:4326")
 
     def _generate_sector_for_task(self, args):
         """Функція для паралельного виклику, генерує сектор для однієї точки та азимуту."""
         point, azimuth = args
         return self.generate_sector(Point(point), azimuth)
+
+
+
+    def find_intersections(self, sectors, grid):
+        """Знаходить перетини вершин квадратів з секторами з використанням паралельної обробки."""
+        # Підготовка завдань для паралельної обробки
+        tasks = [(sector_id, sector, grid) for sector_id, sector in enumerate(sectors.geometry)]
+
+        # Використання пулу процесів для паралельної обробки
+        with mp.Pool(mp.cpu_count()) as pool:
+            results = pool.starmap(_find_intersections_for_sector, tasks)
+
+        # Об'єднання результатів з усіх процесів
+        intersections = [item for sublist in results for item in sublist]
+
+        return intersections

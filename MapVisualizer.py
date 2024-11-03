@@ -8,8 +8,8 @@ class MapVisualizer:
            Використовується для відображення кордону, сітки та секторів на одному статичному графіку.
 
     """
+
     def display_combined(self, border, grid, sectors, title="Combined Map"):
-        """Відображає кордон, сітку квадратів та сектори на одному графіку."""
         fig, ax = plt.subplots(figsize=(10, 10))
 
         # Малюємо кордон України

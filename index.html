@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ukraine Map with Leaflet</title>
+    <title>Карта України із сіткою та секторами Leaflet</title>
     <link
         rel="stylesheet"
         href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
@@ -19,27 +19,39 @@
     <div id="map"></div>
 
     <script>
-    const map = L.map("map").setView([48.3794, 31.1656], 6);
+    var map = L.map('map').setView([48.3794, 31.1656], 6);
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }).addTo(map);
 
-   function addGeoJson(url, style) {
-    fetch(url)
-        .then(response => response.json())
-        .then(data => {
-            console.log("Отримані дані:", data);  // Логування даних
-            L.geoJSON(data, { style: style }).addTo(map);
-        })
-        .catch(error => console.error("Помилка при завантаженні даних:", error));
+    function addGeoJson(url, style, pointToLayer) {
+        fetch(url)
+            .then(response => response.json())
+            .then(data => {
+                L.geoJSON(data, {
+                    style: style,
+                    pointToLayer: pointToLayer
+                }).addTo(map);
+            })
+            .catch(error => console.error("Помилка при завантаженні даних:", error));
     }
 
+    // Додаємо кордон України
     addGeoJson("http://127.0.0.1:5000/api/ukraine_border", { color: "black", weight: 2 });
-    addGeoJson("http://127.0.0.1:5000/api/grid_squares", { color: "red", weight: 1, fillOpacity: 0.1 });
+
+    // Додаємо точоки
+    addGeoJson("http://127.0.0.1:5000/api/grid_squares", null, function (feature, latlng) {
+        return L.circleMarker(latlng, {
+            radius: 2,
+            color: 'red',
+            fillColor: 'red',
+            fillOpacity: 0.5
+        });
+    });
+
+    // Додаємо сектори
     addGeoJson("http://127.0.0.1:5000/api/grid_sectors", { color: "blue", weight: 1, fillOpacity: 0.2 });
-
-
-</script>
+    </script>
 </body>
 </html>
